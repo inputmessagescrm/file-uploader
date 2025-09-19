@@ -1,9 +1,8 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Загрузка файлов для проверки</title>
+  <meta charset="UTF-8" />
+  <title>Загрузка макета</title>
   <style>
         * {
             margin: 0;
@@ -327,241 +326,157 @@
     </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>Загрузите файл для проверки</h1>
-      <p>Выберите документ в формате PDF, TIFF, JPEG или PNG для анализа и проверки</p>
-    </div>
+  <h1>Загрузка макета</h1>
+  <div class="info">Chat ID: <span id="chatId"></span></div>
+  <div class="info">Timestamp: <span id="timestamp"></span></div>
+  <div class="info">Тип печати: <span id="sidesLabel"></span></div>
 
-    <div id="userInfo" class="user-info">
-      <h3>Информация пользователя:</h3>
-      <div id="userDetails"></div>
-    </div>
+  <input type="file" id="fileInput" multiple />
+  <button id="uploadBtn">Загрузить</button>
 
-    <div id="uploadZone" class="upload-zone">
-      <div class="upload-icon">
-        <svg width="32" height="32" fill="white" viewBox="0 0 24 24">
-          <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z" />
-        </svg>
-      </div>
-      <h3 class="upload-title">Перетащите файл сюда</h3>
-      <p class="upload-subtitle">или <span class="highlight">выберите файл</span> с компьютера</p>
-      <p class="upload-formats">Поддерживаемые форматы: PDF, TIFF, JPEG, PNG (до 200MB)</p>
-      <input type="file" id="fileInput" accept=".pdf,.tiff,.tif,.jpeg,.jpg,.png" multiple>
-    </div>
+  <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+  <div id="status"></div>
 
-    <div id="fileInfo" class="file-info"></div>
-
-    <div id="progressContainer" class="progress-container">
-      <div class="progress-header">
-        <span class="progress-text">Загрузка файла...</span>
-        <span class="progress-percent" id="progressPercent">0%</span>
-      </div>
-      <div class="progress-bar">
-        <div class="progress-fill" id="progressFill"></div>
-      </div>
-      <p class="progress-filename" id="progressFilename"></p>
-    </div>
-
-    <button id="uploadBtn" class="upload-btn hidden">Отправить на проверку</button>
-  </div>
-
-  <!-- PDF.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-  <!-- UTIF.js -->
-  <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.min.js"></script>
+  <!-- pdf-lib -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  <!-- utif.js -->
+  <script src="https://unpkg.com/utif@2.0.1/UTIF.min.js"></script>
 
   <script>
-    const WEBHOOK_URL = 'https://n8n.mdmprint.online/webhook/6a64b230-5b0c-46ad-b4d0-8830cbd95cc4';
-    const ALLOWED_EXTENSIONS = ['pdf', 'tiff', 'tif', 'jpeg', 'jpg', 'png'];
-    const MAX_FILE_SIZE = 200 * 1024 * 1024;
+    const urlParams = new URLSearchParams(window.location.search);
+    const chatId = urlParams.get("chat_id") || "unknown";
+    const timestamp = urlParams.get("timestamp") || Date.now();
+    const sides = urlParams.get("sides") || "one"; // one | two
 
-    let selectedFiles = [];
-    let isUploading = false;
-    let urlParams = { chat_id: '', timestamp: '', bot: '', messageId: '', sides: 'one' };
+    document.getElementById("chatId").textContent = chatId;
+    document.getElementById("timestamp").textContent = timestamp;
+    document.getElementById("sidesLabel").textContent =
+      sides === "two" ? "Двусторонняя (sides=two)" : "Односторонняя (sides=one)";
 
-    const uploadZone = document.getElementById('uploadZone');
-    const fileInput = document.getElementById('fileInput');
-    const fileInfo = document.getElementById('fileInfo');
-    const uploadBtn = document.getElementById('uploadBtn');
-    const progressContainer = document.getElementById('progressContainer');
-    const progressFill = document.getElementById('progressFill');
-    const progressPercent = document.getElementById('progressPercent');
-    const progressFilename = document.getElementById('progressFilename');
-    const userInfo = document.getElementById('userInfo');
-    const userDetails = document.getElementById('userDetails');
+    const fileInput = document.getElementById("fileInput");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const progressBar = document.getElementById("progressBar");
+    const statusDiv = document.getElementById("status");
 
-    function init() {
-      const searchParams = new URLSearchParams(window.location.search);
-      urlParams.chat_id = searchParams.get('chat_id') || '';
-      urlParams.timestamp = searchParams.get('timestamp') || '';
-      urlParams.bot = searchParams.get('bot') || '';
-      urlParams.messageId = searchParams.get('messageId') || '';
-      urlParams.sides = searchParams.get('sides') || 'one';
-
-      if (urlParams.chat_id || urlParams.timestamp || urlParams.sides) {
-        let html = '';
-        if (urlParams.chat_id) html += `<p>Chat ID: ${urlParams.chat_id}</p>`;
-        if (urlParams.timestamp) html += `<p>Timestamp: ${urlParams.timestamp}</p>`;
-        html += `<p>Тип печати: ${urlParams.sides === 'one' ? 'Односторонняя' : 'Двусторонняя'}</p>`;
-        userDetails.innerHTML = html;
-        userInfo.style.display = 'block';
+    // Преобразование изображения (JPEG/PNG) в PDF
+    async function imageToPdf(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfDoc = await PDFLib.PDFDocument.create();
+      let image;
+      if (file.type === "image/png") {
+        image = await pdfDoc.embedPng(arrayBuffer);
+      } else {
+        image = await pdfDoc.embedJpg(arrayBuffer);
       }
-
-      uploadZone.addEventListener('click', () => fileInput.click());
-      uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
-      uploadZone.addEventListener('dragleave', e => { e.preventDefault(); uploadZone.classList.remove('drag-over'); });
-      uploadZone.addEventListener('drop', handleDrop);
-      fileInput.addEventListener('change', handleFileInputChange);
-      uploadBtn.addEventListener('click', handleUpload);
+      const page = pdfDoc.addPage([image.width, image.height]);
+      page.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+      return await pdfDoc.save();
     }
 
-    async function validateAndAnalyzeFiles(files) {
-      let pagesTotal = 0;
-      let detailsHtml = '';
-      const sides = urlParams.sides;
+    // Преобразование TIFF в PDF
+    async function tiffToPdf(file) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const ifds = UTIF.decode(buf);
+      UTIF.decodeImages(buf, ifds);
 
-      if ((sides === 'one' && files.length > 1) || (sides === 'two' && files.length > 2)) {
-        showToast('Ошибка', 'Загружено слишком много файлов', 'error');
-        return false;
+      const pdfDoc = await PDFLib.PDFDocument.create();
+      for (const ifd of ifds) {
+        const rgba = UTIF.toRGBA8(ifd);
+        const canvas = document.createElement("canvas");
+        canvas.width = ifd.width;
+        canvas.height = ifd.height;
+        const ctx = canvas.getContext("2d");
+        const imageData = ctx.createImageData(ifd.width, ifd.height);
+        imageData.data.set(rgba);
+        ctx.putImageData(imageData, 0, 0);
+
+        const dataUrl = canvas.toDataURL("image/png");
+        const img = await pdfDoc.embedPng(dataUrl);
+        const page = pdfDoc.addPage([ifd.width, ifd.height]);
+        page.drawImage(img, { x: 0, y: 0, width: ifd.width, height: ifd.height });
       }
-
-      for (let file of files) {
-        if (file.size > MAX_FILE_SIZE) {
-          showToast('Файл слишком большой', `${file.name} > 200MB`, 'error');
-          return false;
-        }
-        const ext = file.name.split('.').pop().toLowerCase();
-        let pages = 1;
-
-        if (ext === 'pdf') {
-          const arrayBuffer = await file.arrayBuffer();
-          const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-          pages = pdf.numPages;
-        } else if (ext === 'tif' || ext === 'tiff') {
-          const arrayBuffer = await file.arrayBuffer();
-          const ifds = UTIF.decode(arrayBuffer);
-          pages = ifds.length;
-        } else {
-          pages = 1; // jpeg/png
-        }
-
-        detailsHtml += `<p>${file.name} — ${pages} стр.</p>`;
-        pagesTotal += pages;
-
-        if (sides === 'one' && pagesTotal > 1) {
-          showToast('Ошибка', 'Для односторонней печати допустим только 1 файл = 1 страница', 'error');
-          return false;
-        }
-        if (sides === 'two' && pagesTotal > 2) {
-          showToast('Ошибка', 'Для двусторонней печати допустимы максимум 2 страницы', 'error');
-          return false;
-        }
-      }
-
-      fileInfo.innerHTML = detailsHtml;
-      fileInfo.style.display = 'block';
-      uploadBtn.classList.remove('hidden');
-      uploadZone.style.display = 'none';
-      return true;
+      return await pdfDoc.save();
     }
 
-    function handleDrop(e) {
-      e.preventDefault();
-      uploadZone.classList.remove('drag-over');
-      if (e.dataTransfer.files.length) {
-        processFiles(e.dataTransfer.files);
+    // Универсальное преобразование файла в PDF (Uint8Array)
+    async function fileToPdfBytes(file) {
+      if (file.type === "application/pdf") {
+        return new Uint8Array(await file.arrayBuffer());
+      } else if (file.type === "image/tiff") {
+        return await tiffToPdf(file);
+      } else if (file.type === "image/png" || file.type === "image/jpeg") {
+        return await imageToPdf(file);
+      } else {
+        throw new Error("Неподдерживаемый тип файла: " + file.type);
       }
     }
 
-    function handleFileInputChange(e) {
-      if (e.target.files.length) {
-        processFiles(e.target.files);
+    // Объединение нескольких PDF в один
+    async function mergePdfs(pdfBytesArray) {
+      const mergedPdf = await PDFLib.PDFDocument.create();
+      for (const bytes of pdfBytesArray) {
+        const pdf = await PDFLib.PDFDocument.load(bytes);
+        const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+        copiedPages.forEach(p => mergedPdf.addPage(p));
       }
+      return await mergedPdf.save();
     }
 
-    async function processFiles(files) {
-      selectedFiles = Array.from(files);
-      const ok = await validateAndAnalyzeFiles(selectedFiles);
-      if (!ok) {
-        selectedFiles = [];
-        fileInfo.style.display = 'none';
-        uploadBtn.classList.add('hidden');
-        uploadZone.style.display = 'block';
+    uploadBtn.addEventListener("click", async () => {
+      const files = fileInput.files;
+      if (!files.length) {
+        alert("Выберите файл(ы)");
+        return;
       }
-    }
-
-    async function handleUpload() {
-      if (!selectedFiles.length || isUploading) return;
-      isUploading = true;
-      uploadBtn.disabled = true;
-      progressContainer.style.display = 'block';
-      progressFilename.textContent = selectedFiles.map(f => f.name).join(', ');
-
-      let progress = 0;
-      const interval = setInterval(() => {
-        progress = Math.min(progress + Math.random() * 10, 90);
-        updateProgress(progress);
-      }, 200);
+      if (sides === "one" && files.length !== 1) {
+        alert("Для односторонней печати можно загрузить только один файл.");
+        return;
+      }
+      if (sides === "two" && files.length > 2) {
+        alert("Для двусторонней печати можно загрузить не более двух файлов.");
+        return;
+      }
 
       try {
-        const formData = new FormData();
-        selectedFiles.forEach(f => formData.append('files', f));
-        formData.append('sides', urlParams.sides);
-        if (urlParams.chat_id) formData.append('chat_id', urlParams.chat_id);
-        if (urlParams.timestamp) formData.append('timestamp', urlParams.timestamp);
-        if (urlParams.bot) formData.append('bot', urlParams.bot);
-        if (urlParams.messageId) formData.append('messageId', urlParams.messageId);
+        progressBar.style.width = "0%";
+        statusDiv.textContent = "Обработка файлов...";
 
-        const resp = await fetch(WEBHOOK_URL, { method: 'POST', body: formData });
-        clearInterval(interval);
-        updateProgress(100);
-
-        if (resp.ok) {
-          showToast('Файлы загружены', 'Отправлены на обработку');
-          setTimeout(resetUI, 1000);
-        } else {
-          throw new Error(`Сервер: ${resp.status}`);
+        const pdfBytesArray = [];
+        for (const file of files) {
+          const pdfBytes = await fileToPdfBytes(file);
+          pdfBytesArray.push(pdfBytes);
         }
+
+        let finalPdfBytes;
+        if (pdfBytesArray.length === 1) {
+          finalPdfBytes = pdfBytesArray[0];
+        } else {
+          finalPdfBytes = await mergePdfs(pdfBytesArray);
+        }
+
+        const finalFile = new File([finalPdfBytes], "document.pdf", { type: "application/pdf" });
+
+        const formData = new FormData();
+        formData.append("chat_id", chatId);
+        formData.append("timestamp", timestamp);
+        formData.append("sides", sides);
+        formData.append("file", finalFile);
+
+        // Пример отправки на webhook
+        const response = await fetch("https://your-n8n-webhook-url", {
+          method: "POST",
+          body: formData
+        });
+
+        if (!response.ok) throw new Error("Ошибка при загрузке");
+
+        progressBar.style.width = "100%";
+        statusDiv.textContent = "Файл успешно отправлен!";
       } catch (err) {
-        clearInterval(interval);
-        updateProgress(0);
-        showToast('Ошибка загрузки', err.message, 'error');
-      } finally {
-        isUploading = false;
-        uploadBtn.disabled = false;
+        console.error(err);
+        statusDiv.textContent = "Ошибка: " + err.message;
       }
-    }
-
-    function resetUI() {
-      selectedFiles = [];
-      fileInfo.style.display = 'none';
-      uploadBtn.classList.add('hidden');
-      progressContainer.style.display = 'none';
-      updateProgress(0);
-      uploadZone.style.display = 'block';
-    }
-
-    function updateProgress(v) {
-      progressFill.style.width = `${v}%`;
-      progressPercent.textContent = `${Math.round(v)}%`;
-    }
-
-    function showToast(title, msg, type = 'success') {
-      const toast = document.createElement('div');
-      toast.className = `toast ${type === 'error' ? 'error' : ''}`;
-      toast.innerHTML = `<div class="toast-title">${title}</div><div class="toast-message">${msg}</div>`;
-      document.body.appendChild(toast);
-      setTimeout(() => {
-        toast.classList.add('show');
-        setTimeout(() => {
-          toast.classList.remove('show');
-          setTimeout(() => toast.remove(), 300);
-        }, 5000);
-      }, 100);
-    }
-
-    init();
+    });
   </script>
 </body>
 </html>
