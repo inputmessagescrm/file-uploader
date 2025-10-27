@@ -210,15 +210,24 @@
     function parseVal(v){ if(v==='true')return true; if(v==='false')return false; const n=Number(v); return isNaN(n)?v:n; }
     function toNum(v){ const n=Number(v); return isNaN(n)?null:n; }
     function humanSizeLabel(long, short){
-      if(!long||!short) return '—';
-      const [min,max]=[long,short].sort((a,b)=>a-b);
-      const table={
-        '76x105':'A7 105×76 мм','105x146':'A6 105×146 мм','146x210':'A5 146×210 мм',
-        '210x297':'A4 210×297 мм','297x420':'A3 297×420 мм','210x210':'210×210 мм',
-        '99x210':'99×210 мм','90x50':'90×50 мм','85x55':'85×55 мм',
+      if(!long || !short) return '—';
+      // сначала пытаемся сопоставить предустановкам
+      const table = {
+        '76x105':  'A7 105×76 мм',
+        '105x146': 'A6 105×146 мм',
+        '146x210': 'A5 146×210 мм',
+        '210x297': 'A4 210×297 мм',
+        '297x420': 'A3 297×420 мм',
+        '210x210': '210×210 мм',
+        '99x210':  '99×210 мм',
+        '90x50':   '90×50 мм',
+        '85x55':   '85×55 мм',
       };
-      const key=`${min}x${max}`;
-      return table[key] || `Свой размер ${min}×${max} мм`;
+      // long — всегда длинная сторона, short — короткая
+      const key = `${short}x${long}` in table ? `${short}x${long}` : `${long}x${short}`;
+      if (table[key]) return table[key];
+      // для кастомов показываем просто «90×50 мм» (без «Свой размер»)
+      return `${long}×${short} мм`;
     }
     function renderUserInfo() {
       const lines = [];
@@ -493,3 +502,4 @@
   </script>
 </body>
 </html>
+
