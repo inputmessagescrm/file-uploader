@@ -126,19 +126,18 @@
     </div>
   </div>
 
-  <!-- PDF.js (на будущее; сейчас не используем) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-  <!-- UTIF.js -->
   <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.min.js"></script>
-  <!-- pdf-lib -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 
   <script>
     const WEBHOOK_URL = 'https://n8n.mdmprint.online/webhook/6a64b230-5b0c-46ad-b4d0-8830cbd95cc4';
     const ALLOWED_EXTENSIONS = ['pdf','tiff','tif','jpeg','jpg','png'];
     const MAX_FILE_SIZE = 200 * 1024 * 1024;
-    const SIZE_TOL_MM = 3;
-    const RATIO_TOL = 0.02;
+
+    // === главное изменение: допуск ±10 мм ===
+    const SIZE_TOL_MM = 10;     // было 3
+    const RATIO_TOL   = 0.02;
 
     let selectedFiles = [];
     let isUploading = false;
@@ -211,7 +210,6 @@
     function toNum(v){ const n=Number(v); return isNaN(n)?null:n; }
     function humanSizeLabel(long, short){
       if(!long || !short) return '—';
-      // сначала пытаемся сопоставить предустановкам
       const table = {
         '76x105':  'A7 105×76 мм',
         '105x146': 'A6 105×146 мм',
@@ -223,10 +221,8 @@
         '90x50':   '90×50 мм',
         '85x55':   '85×55 мм',
       };
-      // long — всегда длинная сторона, short — короткая
       const key = `${short}x${long}` in table ? `${short}x${long}` : `${long}x${short}`;
       if (table[key]) return table[key];
-      // для кастомов показываем просто «90×50 мм» (без «Свой размер»)
       return `${long}×${short} мм`;
     }
     function renderUserInfo() {
@@ -289,7 +285,9 @@
             const wmm=vp.width*25.4/72, hmm=vp.height*25.4/72;
             const [tw,th]=[expected.w,expected.h];
             sizeOk=mmClose(wmm,hmm,tw,th,SIZE_TOL_MM);
-            if(!sizeOk) sizeNote=` (ожидалось ~${tw}×${th} мм, получено ~${Math.round(wmm)}×${Math.round(hmm)} мм)`;
+            if(!sizeOk){
+              sizeNote=` (ожидалось ~${tw}×${th} мм, допуск ±${SIZE_TOL_MM} мм; получено ~${Math.round(wmm)}×${Math.round(hmm)} мм)`;
+            }
           }
         } else if (ext==='tif' || ext==='tiff'){
           const buf=await file.arrayBuffer();
@@ -390,7 +388,6 @@
       progressFilename.textContent = selectedFiles.map(f=>f.name).join(', ');
 
       try{
-        // собрать итоговый PDF в памяти
         let pdfBuffers=[];
         for(const file of selectedFiles){
           const ext=file.name.split('.').pop().toLowerCase();
@@ -400,7 +397,6 @@
         }
         const finalPdf = (pdfBuffers.length>1) ? await mergePdfs(pdfBuffers) : pdfBuffers[0];
 
-        // сформировать form-data
         const formData = new FormData();
         formData.append('file', new Blob([finalPdf], { type:'application/pdf' }), 'document.pdf');
         formData.append('sides', urlParams.sides);
@@ -409,7 +405,6 @@
         if (urlParams.bot)       formData.append('bot', urlParams.bot);
         if (urlParams.messageId) formData.append('messageId', urlParams.messageId);
 
-        // отправка через XHR, чтобы видеть upload-progress
         await uploadWithProgress(WEBHOOK_URL, formData);
 
       } catch(err){
@@ -426,7 +421,6 @@
         const xhr = new XMLHttpRequest();
         xhr.open('POST', url, true);
 
-        // Прогресс ЗАГРУЗКИ
         xhr.upload.onprogress = (e)=>{
           if (!e.lengthComputable) return;
           const percent = Math.min(100, Math.round((e.loaded / e.total) * 100));
@@ -438,9 +432,7 @@
           updateProgress(0);
         };
 
-        // Когда загрузка тела завершена (дошло до сервера)
         xhr.upload.onloadend = ()=>{
-          // 100% — файл на сервере, теперь идёт проверка
           updateProgress(100);
           progressText.textContent = 'Файл отправлен. Выполняется проверка…';
           progressPercent.textContent = '100%';
@@ -448,13 +440,11 @@
 
         xhr.onreadystatechange = ()=>{
           if (xhr.readyState === 4){
-            // завершена ВЕСЬМА операция: сервер вернул ответ
             try{
               if (xhr.status >= 200 && xhr.status < 300){
                 const data = JSON.parse(xhr.responseText || '{}');
                 if (data?.pdf_url){
                   lastPdfUrl = data.pdf_url;
-                  // UI финал
                   showToast('Готово', 'Файл проверен. Можно открыть PDF.');
                   progressContainer.style.display='none';
                   uploadBtn.classList.add('hidden');
@@ -497,9 +487,7 @@
       setTimeout(()=>{ toast.classList.add('show'); setTimeout(()=>{ toast.classList.remove('show'); setTimeout(()=>toast.remove(),300); }, 5000); },100);
     }
 
-    // ---- init ----
     init();
   </script>
 </body>
 </html>
-
