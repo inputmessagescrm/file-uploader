@@ -135,15 +135,11 @@
     const ALLOWED_EXTENSIONS = ['pdf','tiff','tif','jpeg','jpg','png'];
     const MAX_FILE_SIZE = 200 * 1024 * 1024;
 
-    // === главное изменение: допуск ±10 мм ===
-    const SIZE_TOL_MM = 10;     // было 3
-    const RATIO_TOL   = 0.02;
-
     let selectedFiles = [];
     let isUploading = false;
     let lastPdfUrl = '';
 
-    const urlParams = { chat_id:'', timestamp:'', bot:'', messageId:'', sides:'one', sheet:'', sizeLabel:'', bleed:null, jobVars:null };
+    const urlParams = { chat_id:'', timestamp:'', bot:'', messageId:'', sides:'one', sheet:'', jobVars:null };
 
     const uploadZone = document.getElementById('uploadZone');
     const fileInput = document.getElementById('fileInput');
@@ -180,54 +176,10 @@
       urlParams.messageId = sp.get('messageId') || '';
       urlParams.sides     = sp.get('sides') || 'one';
       urlParams.sheet     = sp.get('sheet') || '';
-
-      const jobStr = sp.get('job');
-      if (jobStr) {
-        try {
-          const job = JSON.parse(decodeURIComponent(jobStr));
-          const map = {};
-          (job.params || []).forEach(p => {
-            if (p.startsWith('--setvariable=')) {
-              const rest = p.slice('--setvariable='.length);
-              const idx = rest.indexOf(':');
-              if (idx > 0) {
-                const k = rest.slice(0, idx);
-                const v = rest.slice(idx + 1);
-                map[k] = parseVal(v);
-              }
-            }
-          });
-          urlParams.jobVars = map;
-          urlParams.bleed = !!map['G_ONOFF_createBleedIfNeeded'];
-
-          const long = toNum(map['specification_long_size']);
-          const short = toNum(map['specification_short_size']);
-          urlParams.sizeLabel = humanSizeLabel(long, short);
-        } catch(e){ console.warn('job parse error', e); }
-      }
     }
-    function parseVal(v){ if(v==='true')return true; if(v==='false')return false; const n=Number(v); return isNaN(n)?v:n; }
-    function toNum(v){ const n=Number(v); return isNaN(n)?null:n; }
-    function humanSizeLabel(long, short){
-      if(!long || !short) return '—';
-      const table = {
-        '76x105':  'A7 105×76 мм',
-        '105x146': 'A6 105×146 мм',
-        '146x210': 'A5 146×210 мм',
-        '210x297': 'A4 210×297 мм',
-        '297x420': 'A3 297×420 мм',
-        '210x210': '210×210 мм',
-        '99x210':  '99×210 мм',
-        '90x50':   '90×50 мм',
-        '85x55':   '85×55 мм',
-      };
-      const key = `${short}x${long}` in table ? `${short}x${long}` : `${long}x${short}`;
-      if (table[key]) return table[key];
-      return `${long}×${short} мм`;
-    }
+
     function renderUserInfo() {
       const lines = [];
-      if (urlParams.sizeLabel) lines.push(`<p>Размер изделия: ${urlParams.sizeLabel}</p>`);
       if (urlParams.bot === 'mockup') {
         lines.push(`<p>Тип печати: ${urlParams.sides === 'two' ? 'Двусторонняя' : 'Односторонняя'}</p>`);
       }
@@ -235,83 +187,44 @@
         if (urlParams.sheet === 'SRA3') lines.push('<p>Формат листа для раскладки: SRA3 450×320 мм</p>');
         else if (urlParams.sheet === '487x330') lines.push('<p>Формат листа для раскладки: 487×330 мм</p>');
       }
-      if (typeof urlParams.bleed === 'boolean') lines.push(`<p>Дорисовка вылетов: ${urlParams.bleed ? 'Да' : 'Нет'}</p>`);
       if (lines.length){ userDetails.innerHTML = lines.join(''); userInfo.style.display='block'; }
     }
 
     // ---------- Validation ----------
-    function expectedSizeFromJob() {
-      const j = urlParams.jobVars || {};
-      const long = toNum(j['specification_long_size']);
-      const short = toNum(j['specification_short_size']);
-      if (!long || !short) return null;
-      return { w: long, h: short };
-    }
-    function mmClose(wmm, hmm, tw, th, tol){
-      const ok1 = Math.abs(wmm - tw) <= tol && Math.abs(hmm - th) <= tol;
-      const ok2 = Math.abs(wmm - th) <= tol && Math.abs(hmm - tw) <= tol;
-      return ok1 || ok2;
-    }
-    function ratioClose(w,h,tw,th,tol){
-      const r1=w/h, r2=tw/th, inv=th/tw;
-      return Math.abs(r1-r2)/r2<=tol || Math.abs(r1-inv)/inv<=tol;
-    }
-    function fileToImage(file){
-      return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=rej; img.src=URL.createObjectURL(file); });
-    }
-
     async function validateAndAnalyzeFiles(files){
       let pagesTotal=0;
       let detailsHtml='';
       const sides=urlParams.sides;
-      const expected=expectedSizeFromJob();
 
       if ((sides==='one' && files.length>1) || (sides==='two' && files.length>2)) {
         showToast('Ошибка','Загружено слишком много файлов','error'); return false;
       }
 
       for (let file of files){
-        if (file.size>MAX_FILE_SIZE){ showToast('Файл слишком большой',`${file.name} > 200MB`,'error'); return false; }
         const ext=file.name.split('.').pop().toLowerCase();
-        let pages=1, sizeOk=true, sizeNote='';
+        if (!ALLOWED_EXTENSIONS.includes(ext)) {
+          showToast('Ошибка','Недопустимый формат файла','error'); return false;
+        }
+        if (file.size>MAX_FILE_SIZE){
+          showToast('Файл слишком большой',`${file.name} > 200MB`,'error'); return false;
+        }
 
+        let pages=1;
         if (ext==='pdf'){
           const buf=await file.arrayBuffer();
           const pdf=await pdfjsLib.getDocument({data:buf}).promise;
           pages=pdf.numPages;
-          if (expected){
-            const page=await pdf.getPage(1);
-            const vp=page.getViewport({scale:1});
-            const wmm=vp.width*25.4/72, hmm=vp.height*25.4/72;
-            const [tw,th]=[expected.w,expected.h];
-            sizeOk=mmClose(wmm,hmm,tw,th,SIZE_TOL_MM);
-            if(!sizeOk){
-              sizeNote=` (ожидалось ~${tw}×${th} мм, допуск ±${SIZE_TOL_MM} мм; получено ~${Math.round(wmm)}×${Math.round(hmm)} мм)`;
-            }
-          }
         } else if (ext==='tif' || ext==='tiff'){
           const buf=await file.arrayBuffer();
           const ifds=UTIF.decode(buf);
           pages=ifds.length;
-          if(expected && ifds[0]){
-            const w=ifds[0].width, h=ifds[0].height;
-            sizeOk=ratioClose(w,h,expected.w,expected.h,RATIO_TOL);
-            if(!sizeOk) sizeNote=' (соотношение сторон не совпадает с выбранным форматом)';
-          }
-        } else {
-          if(expected){
-            const img=await fileToImage(file);
-            sizeOk=ratioClose(img.width,img.height,expected.w,expected.h,RATIO_TOL);
-            if(!sizeOk) sizeNote=' (соотношение сторон не совпадает с выбранным форматом)';
-          }
         }
 
-        detailsHtml += `<p>${file.name} — ${pages} стр.${!sizeOk?` <span style="color:#ef4444">${sizeNote}</span>`:''}</p>`;
+        detailsHtml += `<p>${file.name} — ${pages} стр.</p>`;
         pagesTotal += pages;
 
         if (sides==='one' && pagesTotal>1){ showToast('Ошибка','Для односторонней печати допустим только 1 файл = 1 страница','error'); return false; }
         if (sides==='two' && pagesTotal>2){ showToast('Ошибка','Для двусторонней печати допустимы максимум 2 страницы','error'); return false; }
-        if (!sizeOk){ showToast('Неверный размер/формат', `${file.name}${sizeNote}`,'error'); return false; }
       }
 
       fileInfo.innerHTML=detailsHtml;
@@ -427,16 +340,8 @@
           updateProgress(percent);
         };
 
-        xhr.upload.onloadstart = ()=>{
-          progressText.textContent = 'Загрузка файла…';
-          updateProgress(0);
-        };
-
-        xhr.upload.onloadend = ()=>{
-          updateProgress(100);
-          progressText.textContent = 'Файл отправлен. Выполняется проверка…';
-          progressPercent.textContent = '100%';
-        };
+        xhr.upload.onloadstart = ()=>{ progressText.textContent = 'Загрузка файла…'; updateProgress(0); };
+        xhr.upload.onloadend = ()=>{ updateProgress(100); progressText.textContent = 'Файл отправлен. Выполняется проверка…'; progressPercent.textContent = '100%'; };
 
         xhr.onreadystatechange = ()=>{
           if (xhr.readyState === 4){
