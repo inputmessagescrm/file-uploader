@@ -126,6 +126,7 @@
     </div>
   </div>
 
+  <!-- Библиотеки: считаем страницы PDF/TIFF, конвертируем изображения в PDF -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
@@ -139,7 +140,10 @@
     let isUploading = false;
     let lastPdfUrl = '';
 
-    const urlParams = { chat_id:'', timestamp:'', bot:'', messageId:'', sides:'one', sheet:'', jobVars:null };
+    const urlParams = {
+      chat_id:'', timestamp:'', bot:'', messageId:'', sides:'one', sheet:'',
+      sizeLabel:'', bleed:null, jobVars:null
+    };
 
     const uploadZone = document.getElementById('uploadZone');
     const fileInput = document.getElementById('fileInput');
@@ -153,6 +157,20 @@
     const progressFilename = document.getElementById('progressFilename');
     const userInfo = document.getElementById('userInfo');
     const userDetails = document.getElementById('userDetails');
+
+    // --- таблица label как в ТГ-боте (по отсортированной паре w×h) ---
+    // ключ: "minxmax" в мм → label
+    const SIZE_LABEL_TABLE = {
+      '76x105':  'A7 105×76 мм',
+      '105x146': 'A6 105×146 мм',
+      '146x210': 'A5 146×210 мм',
+      '210x297': 'A4 210×297 мм',
+      '297x420': 'A3 297×420 мм',
+      '210x210': '210×210 мм',
+      '99x210':  '99×210 мм',
+      '50x90':   '90×50 мм',
+      '55x85':   '85×55 мм',
+    };
 
     function init() {
       parseUrl();
@@ -176,10 +194,56 @@
       urlParams.messageId = sp.get('messageId') || '';
       urlParams.sides     = sp.get('sides') || 'one';
       urlParams.sheet     = sp.get('sheet') || '';
+
+      const jobStr = sp.get('job');
+      if (jobStr) {
+        try {
+          const job = JSON.parse(decodeURIComponent(jobStr));
+          const map = {};
+          (job.params || []).forEach(p => {
+            if (p.startsWith('--setvariable=')) {
+              const rest = p.slice('--setvariable='.length);
+              const idx = rest.indexOf(':');
+              if (idx > 0) {
+                const k = rest.slice(0, idx);
+                const v = rest.slice(idx + 1);
+                map[k] = parseVal(v);
+              }
+            }
+          });
+          urlParams.jobVars = map;
+          // bleed как булево
+          urlParams.bleed = map['G_ONOFF_createBleedIfNeeded'] === true;
+
+          // формируем label по long/short
+          const long = toNum(map['specification_long_size']);
+          const short = toNum(map['specification_short_size']);
+          urlParams.sizeLabel = humanSizeLabelFromLongShort(long, short);
+        } catch(e){ console.warn('job parse error', e); }
+      }
+    }
+
+    function parseVal(v){
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+      const n = Number(v);
+      return isNaN(n) ? v : n;
+    }
+    function toNum(v){ const n = Number(v); return isNaN(n)?null:n; }
+
+    // Возвращаем label как в ТГ-боте. Для известных размеров — label из таблицы,
+    // для остальных — "Свой размер W×H мм" (W — длинная, H — короткая).
+    function humanSizeLabelFromLongShort(long, short){
+      if(!long || !short) return '—';
+      const a = Math.min(long, short), b = Math.max(long, short);
+      const key = `${a}x${b}`;
+      if (SIZE_LABEL_TABLE[key]) return SIZE_LABEL_TABLE[key];
+      return `Свой размер ${b}×${a} мм`;
     }
 
     function renderUserInfo() {
       const lines = [];
+      if (urlParams.sizeLabel) lines.push(`<p>Размер изделия: ${urlParams.sizeLabel}</p>`);
       if (urlParams.bot === 'mockup') {
         lines.push(`<p>Тип печати: ${urlParams.sides === 'two' ? 'Двусторонняя' : 'Односторонняя'}</p>`);
       }
@@ -187,56 +251,77 @@
         if (urlParams.sheet === 'SRA3') lines.push('<p>Формат листа для раскладки: SRA3 450×320 мм</p>');
         else if (urlParams.sheet === '487x330') lines.push('<p>Формат листа для раскладки: 487×330 мм</p>');
       }
-      if (lines.length){ userDetails.innerHTML = lines.join(''); userInfo.style.display='block'; }
+      if (typeof urlParams.bleed === 'boolean') {
+        lines.push(`<p>Дорисовка вылетов: ${urlParams.bleed ? 'Да' : 'Нет'}</p>`);
+      }
+      if (lines.length){
+        userDetails.innerHTML = lines.join('');
+        userInfo.style.display='block';
+      }
     }
 
-    // ---------- Validation ----------
+    // ---------- Validation (без проверок геометрии!) ----------
     async function validateAndAnalyzeFiles(files){
-      let pagesTotal=0;
-      let detailsHtml='';
-      const sides=urlParams.sides;
+      let pagesTotal = 0;
+      let detailsHtml = '';
+      const sides = urlParams.sides;
 
       if ((sides==='one' && files.length>1) || (sides==='two' && files.length>2)) {
         showToast('Ошибка','Загружено слишком много файлов','error'); return false;
       }
 
       for (let file of files){
-        const ext=file.name.split('.').pop().toLowerCase();
+        // тип/размер
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
         if (!ALLOWED_EXTENSIONS.includes(ext)) {
-          showToast('Ошибка','Недопустимый формат файла','error'); return false;
+          showToast('Ошибка', `${file.name}: недопустимый тип файла`, 'error'); return false;
         }
-        if (file.size>MAX_FILE_SIZE){
-          showToast('Файл слишком большой',`${file.name} > 200MB`,'error'); return false;
+        if (file.size > MAX_FILE_SIZE) {
+          showToast('Файл слишком большой', `${file.name} > 200MB`, 'error'); return false;
         }
 
-        let pages=1;
-        if (ext==='pdf'){
-          const buf=await file.arrayBuffer();
-          const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-          pages=pdf.numPages;
-        } else if (ext==='tif' || ext==='tiff'){
-          const buf=await file.arrayBuffer();
-          const ifds=UTIF.decode(buf);
-          pages=ifds.length;
+        // считаем страницы
+        let pages = 1;
+        if (ext === 'pdf'){
+          const buf = await file.arrayBuffer();
+          const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+          pages = pdf.numPages;
+        } else if (ext === 'tif' || ext === 'tiff'){
+          const buf = await file.arrayBuffer();
+          const ifds = UTIF.decode(buf);
+          pages = ifds.length;
+        } else {
+          pages = 1; // jpeg/png — 1 стр.
         }
 
         detailsHtml += `<p>${file.name} — ${pages} стр.</p>`;
         pagesTotal += pages;
 
-        if (sides==='one' && pagesTotal>1){ showToast('Ошибка','Для односторонней печати допустим только 1 файл = 1 страница','error'); return false; }
-        if (sides==='two' && pagesTotal>2){ showToast('Ошибка','Для двусторонней печати допустимы максимум 2 страницы','error'); return false; }
+        // Правило: sides=one → ровно 1 страница; sides=two → 1 или 2 страницы суммарно
+        if (sides === 'one' && pagesTotal > 1) {
+          showToast('Ошибка','Для односторонней печати допустим ровно 1 страница','error'); return false;
+        }
+        if (sides === 'two' && pagesTotal > 2) {
+          showToast('Ошибка','Для двусторонней печати допустим максимум 2 страницы суммарно','error'); return false;
+        }
       }
 
-      fileInfo.innerHTML=detailsHtml;
-      fileInfo.style.display='block';
+      fileInfo.innerHTML = detailsHtml;
+      fileInfo.style.display = 'block';
       uploadBtn.classList.remove('hidden');
-      uploadZone.style.display='none';
+      uploadZone.style.display = 'none';
       return true;
     }
 
     // ---------- UI handlers ----------
-    function handleDrop(e){ e.preventDefault(); uploadZone.classList.remove('drag-over'); if(e.dataTransfer.files.length) processFiles(e.dataTransfer.files); }
-    function handleFileInputChange(e){ if(e.target.files.length) processFiles(e.target.files); }
+    function handleDrop(e){
+      e.preventDefault();
+      uploadZone.classList.remove('drag-over');
+      if(e.dataTransfer.files.length) processFiles(e.dataTransfer.files);
+    }
+    function handleFileInputChange(e){
+      if(e.target.files.length) processFiles(e.target.files);
+    }
     async function processFiles(files){
       selectedFiles = Array.from(files);
       const ok = await validateAndAnalyzeFiles(selectedFiles);
@@ -301,6 +386,7 @@
       progressFilename.textContent = selectedFiles.map(f=>f.name).join(', ');
 
       try{
+        // Собираем единый PDF (если нужно)
         let pdfBuffers=[];
         for(const file of selectedFiles){
           const ext=file.name.split('.').pop().toLowerCase();
@@ -340,8 +426,16 @@
           updateProgress(percent);
         };
 
-        xhr.upload.onloadstart = ()=>{ progressText.textContent = 'Загрузка файла…'; updateProgress(0); };
-        xhr.upload.onloadend = ()=>{ updateProgress(100); progressText.textContent = 'Файл отправлен. Выполняется проверка…'; progressPercent.textContent = '100%'; };
+        xhr.upload.onloadstart = ()=>{
+          progressText.textContent = 'Загрузка файла…';
+          updateProgress(0);
+        };
+
+        xhr.upload.onloadend = ()=>{
+          updateProgress(100);
+          progressText.textContent = 'Файл отправлен. Выполняется проверка…';
+          progressPercent.textContent = '100%';
+        };
 
         xhr.onreadystatechange = ()=>{
           if (xhr.readyState === 4){
@@ -373,7 +467,12 @@
           }
         };
 
-        xhr.onerror = ()=>{ isUploading=false; progressContainer.style.display='none'; uploadBtn.classList.remove('hidden'); reject(new Error('Ошибка сети')); };
+        xhr.onerror = ()=>{
+          isUploading=false;
+          progressContainer.style.display='none';
+          uploadBtn.classList.remove('hidden');
+          reject(new Error('Ошибка сети'));
+        };
 
         xhr.send(formData);
       });
@@ -389,7 +488,13 @@
       toast.className=`toast ${type==='error'?'error':''}`;
       toast.innerHTML=`<div class="toast-title">${title}</div><div class="toast-message">${msg}</div>`;
       document.body.appendChild(toast);
-      setTimeout(()=>{ toast.classList.add('show'); setTimeout(()=>{ toast.classList.remove('show'); setTimeout(()=>toast.remove(),300); }, 5000); },100);
+      setTimeout(()=>{
+        toast.classList.add('show');
+        setTimeout(()=>{
+          toast.classList.remove('show');
+          setTimeout(()=>toast.remove(),300);
+        }, 5000);
+      },100);
     }
 
     init();
